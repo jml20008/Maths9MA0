@@ -1,0 +1,92 @@
+name: Build Maths9MA0 for fx-CG50
+
+on:
+  push:
+    branches: [main, master]
+  workflow_dispatch:
+    inputs:
+      toolchain:
+        description: "Select fxSDK toolchain"
+        required: true
+        default: modern
+        type: choice
+        options:
+          - modern
+          - classic
+
+permissions:
+  contents: read
+
+jobs:
+  tests:
+    name: Check source and calculations
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Get source
+        uses: actions/checkout@v4
+
+      - name: Test maths engine
+        run: bash tests/run.sh
+
+      - name: Check C syntax
+        run: |
+          cc -Itests/stubs -Isrc -std=c11 -Wall -Wextra -Werror -pedantic \
+            -fsyntax-only src/main.c src/app_data.c src/engine.c
+
+  build:
+    name: Create CG50 add-in
+    needs: tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 50
+
+    steps:
+      - name: Get source
+        uses: actions/checkout@v4
+
+      - name: Compile with fxSDK
+        env:
+          TOOLCHAIN: ${{ inputs.toolchain || 'modern' }}
+        run: |
+          set -euo pipefail
+
+          if [[ "$TOOLCHAIN" == "classic" ]]; then
+            IMAGE="manawyrm/fxsdk:latest"
+          else
+            IMAGE="ghcr.io/therainbowphoenix/gint-docker:main"
+          fi
+
+          docker pull "$IMAGE"
+
+          docker run --rm --user 0 \
+            --mount "type=bind,source=$GITHUB_WORKSPACE,target=/work" \
+            --workdir /work "$IMAGE" sh -c '
+              set -eu
+              command -v fxsdk
+              command -v sh-elf-gcc
+              fxsdk build-cg
+            '
+
+      - name: Find calculator file
+        run: |
+          set -euo pipefail
+
+          ADDIN="$(find . -type f -iname 'MATHS9MA0.g3a' -print -quit)"
+
+          if [[ -z "$ADDIN" ]]; then
+            echo "Build failed: no G3A file found."
+            exit 1
+          fi
+
+          mkdir -p dist
+          cp "$ADDIN" dist/MATHS9MA0.g3a
+          test -s dist/MATHS9MA0.g3a
+
+      - name: Upload calculator app
+        uses: actions/upload-artifact@v4
+        with:
+          name: Maths9MA0-CG50
+          path: dist/MATHS9MA0.g3a
+          if-no-files-found: error
+          retention-days: 30
